@@ -71,7 +71,7 @@ cp config.json config.local.json
 # Edit config.local.json with your values
 
 # 3. Run
-CONFIG_PATH=config.local.json cargo run
+CONFIG_PATH=config.local.json RUSTFLAGS="-C target-cpu=native -C link-arg=-s" cargo run --release > system-monitoring.log 2>&1 &
 ```
 
 Tables and indexes are created automatically on startup via `migrations/001_create_tables.sql`.
@@ -198,6 +198,169 @@ Alert payload:
     "request_id": "uuid-v4"
 }
 ```
+
+## Monitoring (Prometheus + Grafana)
+
+Both services are assumed to be installed directly on the machine. The `monitoring/` directory contains all required config files.
+
+### File layout
+
+```
+monitoring/
+├── prometheus.yml                          # Scrape config  → copy to Prometheus config dir
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/prometheus.yml      # Datasource     → copy to Grafana provisioning dir
+    │   └── dashboards/dashboard.yml        # Dashboard loader → copy to Grafana provisioning dir
+    └── dashboards/
+        └── tycho-risk-monitor.json         # Pre-built dashboard → copy to Grafana dashboards dir
+```
+
+---
+
+### macOS (Homebrew)
+
+#### Install
+
+```bash
+brew install prometheus grafana
+```
+
+#### Configure Prometheus
+
+```bash
+cp monitoring/prometheus.yml /opt/homebrew/etc/prometheus.yml
+```
+
+#### Configure Grafana
+
+```bash
+# Datasource
+cp monitoring/grafana/provisioning/datasources/prometheus.yml /opt/homebrew/etc/grafana/provisioning/datasources/prometheus.yml
+
+# Dashboard provider
+cp monitoring/grafana/provisioning/dashboards/dashboard.yml \
+   /opt/homebrew/etc/grafana/provisioning/dashboards/dashboard.yml
+
+# Dashboard JSON — Grafana loads from the path set in dashboard.yml
+sudo mkdir -p /var/lib/grafana/dashboards
+sudo cp monitoring/grafana/dashboards/tycho-risk-monitor.json \
+        /var/lib/grafana/dashboards/tycho-risk-monitor.json
+```
+
+#### Start / restart services
+
+```bash
+brew services start prometheus
+brew services start grafana
+
+# Or restart if already running
+brew services restart prometheus
+brew services restart grafana
+```
+
+---
+
+### Linux (apt / systemd)
+
+#### Install on Linux
+
+```bash
+# Prometheus
+sudo apt-get install -y prometheus
+
+# Grafana
+sudo apt-get install -y apt-transport-https software-properties-common
+wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+echo "deb https://packages.grafana.com/oss/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/grafana.list
+sudo apt-get update && sudo apt-get install -y grafana
+```
+
+#### Configure Prometheus on Linux
+
+```bash
+sudo cp monitoring/prometheus.yml /etc/prometheus/prometheus.yml
+```
+
+#### Configure Grafana on Linux
+
+```bash
+# Datasource
+sudo cp monitoring/grafana/provisioning/datasources/prometheus.yml \
+        /etc/grafana/provisioning/datasources/prometheus.yml
+
+# Dashboard provider
+sudo cp monitoring/grafana/provisioning/dashboards/dashboard.yml \
+        /etc/grafana/provisioning/dashboards/dashboard.yml
+
+# Dashboard JSON
+sudo mkdir -p /var/lib/grafana/dashboards
+sudo cp monitoring/grafana/dashboards/tycho-risk-monitor.json \
+        /var/lib/grafana/dashboards/tycho-risk-monitor.json
+```
+
+#### Start / restart services on Linux
+
+```bash
+sudo systemctl enable --now prometheus
+sudo systemctl enable --now grafana-server
+
+# Or restart if already running
+sudo systemctl restart prometheus
+sudo systemctl restart grafana-server
+```
+
+---
+
+### Access
+
+| Service    | URL                   | Default credentials |
+| ---------- | --------------------- | ------------------- |
+| Prometheus | http://localhost:9090 | —                   |
+| Grafana    | http://localhost:3000 | admin / admin       |
+
+The dashboard **Tycho Risk Monitor** loads automatically on first Grafana start.
+
+> **Note:** Grafana defaults to port 3000, the same as the app. If both run on the same machine, change the Grafana port in its config:
+>
+> - macOS: edit `/opt/homebrew/etc/grafana/grafana.ini` → `[server] http_port = 3001`
+> - Linux: edit `/etc/grafana/grafana.ini` → `[server] http_port = 3001`
+>
+> Then restart Grafana.
+
+---
+
+### Change the app port
+
+If the app runs on a port other than `3000`, update the scrape target in `monitoring/prometheus.yml` and recopy it:
+
+```yaml
+static_configs:
+  - targets:
+      - localhost:3000   # ← change port here
+```
+
+### Reload Prometheus config without restart
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+### Dashboard panels
+
+| Panel                      | Metric(s)                                          | Description                       |
+| -------------------------- | -------------------------------------------------- | --------------------------------- |
+| Latest Block               | `latest_block_number`                              | Last block seen                   |
+| Matching / Candidate Pools | `latest_matching_pools`, `latest_candidate_pools`  | Last cycle pool counts            |
+| Alerts Fired (5m)          | `alerts_fired_total`                               | Alert spike indicator             |
+| Simulation Request Rate    | `simulation_requests_total`                        | req/s by pair and status          |
+| Simulation Duration        | `simulation_duration_ms`                           | p50 / p95 / p99 by pair           |
+| Pool Risk Score            | `pool_risk_score`                                  | p95 per pool — red at ≥ 70        |
+| Pool Slippage              | `pool_slippage_bps`                                | p95 per pool — red at ≥ 500 bps   |
+| Pool Gas Used              | `pool_gas_used`                                    | p95 per pool                      |
+| Pool Utilization           | `pool_utilization_bps`                             | p95 per pool                      |
+| Alerts by Type             | `alerts_fired_total`                               | Rate and totals per alert type    |
 
 ## Docker
 
